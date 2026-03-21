@@ -47,22 +47,37 @@ struct promise_base
 {
     promise_base() noexcept = default;
     ~promise_base()         = default;
+    std::coroutine_handle<promise_base> parent{nullptr};
+    bool                                is_detach{false};
+    constexpr auto                      initial_suspend() noexcept { return std::suspend_always{}; }
 
-    constexpr auto initial_suspend() noexcept { return std::suspend_always{}; }
+    struct final_awaiter
+    {
+        bool await_ready() noexcept { return false; }
 
-    [[CORO_TEST_USED(lab1)]] auto final_suspend() noexcept -> std::suspend_always
+        std::coroutine_handle<> await_suspend(std::coroutine_handle<> hhandle) noexcept
+        {
+            auto  h_base  = std::coroutine_handle<promise_base>::from_address(hhandle.address());
+            auto& promise = h_base.promise();
+            if (promise.parent)
+            {
+                return promise.parent;
+            }
+            return std::noop_coroutine();
+        }
+
+        void await_resume() noexcept {}
+    };
+    [[CORO_TEST_USED(lab1)]] auto final_suspend() noexcept
     {
         // TODO[lab1]: Add you codes
         // Return suspend_always is incorrect,
         // so you should modify the return type and define new awaiter to return
-        return {};
+        return final_awaiter{};
     }
 
 #ifdef ENABLE_MEMORY_ALLOC
-    void* operator new(std::size_t size)
-    {
-        return ::coro::detail::ginfo.mem_alloc->allocate(size);
-    }
+    void* operator new(std::size_t size) { return ::coro::detail::ginfo.mem_alloc->allocate(size); }
 
     void operator delete(void* ptr, [[CORO_MAYBE_UNUSED]] std::size_t size)
     {
@@ -90,9 +105,7 @@ public:
         promise_id = id;
     }
 #endif // DEBUG
-    promise() noexcept
-    {
-    }
+    promise() noexcept {}
     promise(const promise&)             = delete;
     promise(promise&& other)            = delete;
     promise& operator=(const promise&)  = delete;
@@ -101,10 +114,7 @@ public:
 
     auto get_return_object() noexcept -> task_type;
 
-    auto unhandled_exception() noexcept -> void
-    {
-        this->set_exception();
-    }
+    auto unhandled_exception() noexcept -> void { this->set_exception(); }
 };
 
 template<>
@@ -129,14 +139,9 @@ struct promise<void> : public promise_base
 
     auto get_return_object() noexcept -> task_type;
 
-    constexpr auto return_void() noexcept -> void
-    {
-    }
+    constexpr auto return_void() noexcept -> void {}
 
-    auto unhandled_exception() noexcept -> void
-    {
-        m_exception_ptr = std::current_exception();
-    }
+    auto unhandled_exception() noexcept -> void { m_exception_ptr = std::current_exception(); }
 
     auto result() -> void
     {
@@ -169,7 +174,18 @@ public:
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
         {
             // TODO[lab1]: Add you codes
-            return m_coroutine;
+            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            {
+                // awaiting_coroutine 父协程(task1)
+                // m_coroutine 子协程(task2)
+
+                // 把父协程的句柄存入子协程的 promise 中
+                auto h_base = std::coroutine_handle<detail::promise_base>::from_address(awaiting_coroutine.address());
+                m_coroutine.promise().parent = h_base;
+
+                // 返回子协程句柄,立即开始执行子协程
+                return m_coroutine;
+            }
         }
 
         std::coroutine_handle<promise_type> m_coroutine{nullptr};
@@ -234,7 +250,12 @@ public:
 
     [[CORO_TEST_USED(lab1)]] auto detach() -> void
     {
-        // TODO[lab1]: Add you codes
+        // ODO[lab1]: Add you codes
+        if (m_coroutine != nullptr)
+        {
+            m_coroutine.promise().is_detach = true;
+            m_coroutine                     = nullptr;
+        }
     }
 
     auto operator co_await() const& noexcept
@@ -278,6 +299,14 @@ using coroutine_handle = std::coroutine_handle<detail::promise_base>;
 [[CORO_TEST_USED(lab1)]] inline auto clean(std::coroutine_handle<> handle) noexcept -> void
 {
     // TODO[lab1]: Add you codes
+    if (!handle)
+        return;
+
+    auto h_base = std::coroutine_handle<detail::promise_base>::from_address(handle.address());
+    if (h_base.promise().is_detach)
+    {
+        handle.destroy();
+    }
 }
 
 namespace detail
