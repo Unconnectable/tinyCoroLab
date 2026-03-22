@@ -43,37 +43,47 @@ class task;
 
 namespace detail
 {
+enum class coro_state : uint8_t
+{
+    normal,
+    detach,
+    none
+};
+
 struct promise_base
 {
     promise_base() noexcept = default;
     ~promise_base()         = default;
-    std::coroutine_handle<promise_base> parent{nullptr};
-    bool                                is_detach{false};
-    constexpr auto                      initial_suspend() noexcept { return std::suspend_always{}; }
+    std::coroutine_handle<> m_continuation{nullptr};
 
-    struct final_awaiter
+    constexpr auto initial_suspend() noexcept { return std::suspend_always{}; }
+    auto continuation(std::coroutine_handle<> continuation) noexcept -> void { m_continuation = continuation; }
+
+    inline auto set_state(coro_state state) -> void { m_state = state; }
+    inline auto get_state() -> coro_state { return m_state; }
+    inline auto is_detach() -> bool { return m_state == coro_state::detach; }
+
+    coro_state m_state{coro_state::normal};
+
+    struct final_awaitable
     {
-        bool await_ready() noexcept { return false; }
+        constexpr auto await_ready() const noexcept -> bool { return false; }
 
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<> hhandle) noexcept
+        template<typename promise_type>
+        auto await_suspend(std::coroutine_handle<promise_type> coroutine) noexcept -> std::coroutine_handle<>
         {
-            auto  h_base  = std::coroutine_handle<promise_base>::from_address(hhandle.address());
-            auto& promise = h_base.promise();
-            if (promise.parent)
-            {
-                return promise.parent;
-            }
-            return std::noop_coroutine();
+            auto& promise = coroutine.promise();
+            return promise.m_continuation != nullptr ? promise.m_continuation : std::noop_coroutine();
         }
 
-        void await_resume() noexcept {}
+        constexpr auto await_resume() noexcept -> void {}
     };
     [[CORO_TEST_USED(lab1)]] auto final_suspend() noexcept
     {
         // TODO[lab1]: Add you codes
         // Return suspend_always is incorrect,
         // so you should modify the return type and define new awaiter to return
-        return final_awaiter{};
+        return final_awaitable{};
     }
 
 #ifdef ENABLE_MEMORY_ALLOC
@@ -174,18 +184,9 @@ public:
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
         {
             // TODO[lab1]: Add you codes
-            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
-            {
-                // awaiting_coroutine 父协程(task1)
-                // m_coroutine 子协程(task2)
-
-                // 把父协程的句柄存入子协程的 promise 中
-                auto h_base = std::coroutine_handle<detail::promise_base>::from_address(awaiting_coroutine.address());
-                m_coroutine.promise().parent = h_base;
-
-                // 返回子协程句柄,立即开始执行子协程
-                return m_coroutine;
-            }
+            // 调用函数.continuation() 记录父协程句柄,实现对称传输
+            m_coroutine.promise().continuation(awaiting_coroutine);
+            return m_coroutine;
         }
 
         std::coroutine_handle<promise_type> m_coroutine{nullptr};
@@ -251,11 +252,11 @@ public:
     [[CORO_TEST_USED(lab1)]] auto detach() -> void
     {
         // ODO[lab1]: Add you codes
-        if (m_coroutine != nullptr)
-        {
-            m_coroutine.promise().is_detach = true;
-            m_coroutine                     = nullptr;
-        }
+        // 设置状态为 coro_state:detach
+        assert(m_coroutine != nullptr && "detach func expected no-nullptr coroutine_handler");
+        auto& promise = m_coroutine.promise();
+        promise.set_state(detail::coro_state::detach);
+        m_coroutine = nullptr;
     }
 
     auto operator co_await() const& noexcept
@@ -299,13 +300,16 @@ using coroutine_handle = std::coroutine_handle<detail::promise_base>;
 [[CORO_TEST_USED(lab1)]] inline auto clean(std::coroutine_handle<> handle) noexcept -> void
 {
     // TODO[lab1]: Add you codes
-    if (!handle)
-        return;
 
-    auto h_base = std::coroutine_handle<detail::promise_base>::from_address(handle.address());
-    if (h_base.promise().is_detach)
+    auto  specific_handle = coroutine_handle::from_address(handle.address());
+    auto& promise         = specific_handle.promise();
+    switch (promise.get_state())
     {
-        handle.destroy();
+        case detail::coro_state::detach:
+            handle.destroy();
+            break;
+        default:
+            break;
     }
 }
 
