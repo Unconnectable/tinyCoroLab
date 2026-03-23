@@ -28,7 +28,7 @@ class context;
 };
 
 /**
- * @brief Welcome to tinycoro lab2a, in this part you will build the heart of tinycoro¡ª¡ªengine by
+ * @brief Welcome to tinycoro lab2a, in this part you will build the heart of tinycoroï¿½ï¿½ï¿½ï¿½engine by
  * modifing engine.hpp and engine.cpp, please ensure you have read the document of lab2a.
  *
  * @warning You should carefully consider whether each implementation should be thread-safe.
@@ -170,7 +170,9 @@ public:
 private:
     uint32_t    m_id;
     uring_proxy m_upxy;
-
+    atomic<uint32_t> m_running_io = 0;
+    // uint32_t    m_io_to_submit;
+    atomic<uint32_t> m_io_to_submit = 0;
     // store task handle
     mpmc_queue<coroutine_handle<>> m_task_queue; // You can replace it with another data structure
 
