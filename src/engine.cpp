@@ -24,12 +24,15 @@ auto engine::deinit() noexcept -> void
     m_upxy.deinit();
     m_running_io   = 0;
     m_io_to_submit = 0;
+    mpmc_queue<coroutine_handle<>> task_queue;
+    m_task_queue.swap(task_queue);
 }
 
 auto engine::ready() noexcept -> bool
 {
     // TODO[lab2a]: Add you codes
-    return m_task_queue.was_size() > 0;
+    // return m_task_queue.was_size() > 0;
+    return !m_task_queue.was_empty();
 }
 
 auto engine::get_free_urs() noexcept -> ursptr
@@ -54,13 +57,14 @@ auto engine::submit_task(coroutine_handle<> handle) noexcept -> void
 {
     // TODO[lab2a]: Add you codes
     // 1. 将协程句柄加入到待执行的任务队列
+    assert(handle != nullptr && "engine get nullptr task handle");
     m_task_queue.push(handle);
 
     // 2. 唤醒 engine 工作线程
     //    如果 engine 正阻塞在 wait_eventfd(),通过向 eventfd 写入值来唤醒它,
     //    使其能够检测到新加入的任务并继续执行.
-    m_upxy.write_eventfd(1);
-    // wake_up(); // 官方答案的封装,功能同上
+    // m_upxy.write_eventfd(1);
+    wake_up();
 }
 
 auto engine::exec_one_task() noexcept -> void
@@ -83,32 +87,35 @@ auto engine::handle_cqe_entry(urcptr cqe) noexcept -> void
     data->cb(data, cqe->res);
 }
 
+auto engine::do_io_submit() noexcept -> void
+{
+    // int num_task_wait = m_num_io_wait_submit.load(std::memory_order_acquire);
+    if (m_io_to_submit.load() > 0)
+    {
+        auto complement_count = m_upxy.submit();
+        m_running_io += complement_count;
+        m_io_to_submit -= complement_count;
+    }
+}
+auto engine::wake_up(uint64_t val) noexcept -> void
+{
+    m_upxy.write_eventfd(val);
+}
 // poll_submit() 函数:engine 的核心 I/O 调度与处理函数
+
 auto engine::poll_submit() noexcept -> void
 {
     // 1. 提交 IO:检查是否有待提交的 IO,并将其发送给内核
-    auto submit = [&]()
-    {
-        if (m_io_to_submit > 0) // 检查是否有 IO 请求待提交
-        {
-            // 调用 io_uring 代理提交 IO 请求给内核,返回实际提交的数量
-            int submitted_count = m_upxy.submit();
-
-            if (submitted_count > 0) // 如果有 IO 被成功提交
-            {
-                // 将实际提交的 IO 数量加到 运行中 的计数器
-                m_running_io.fetch_add(submitted_count);
-
-                // 从“待提交”计数器中减去实际提交的数量
-                m_io_to_submit -= submitted_count;
-            }
-        }
-    };
-    submit(); // 执行提交操作
+    do_io_submit(); // 执行提交操作
 
     // 2. 等待事件(阻塞)
     //    阻塞等待,直到有事件发生(IO 完成或被唤醒),避免 CPU 空转.
     auto cnt = m_upxy.wait_eventfd();
+
+    if (!wake_by_cqe(cnt))
+    {
+        return;
+    }
 
     // 3. 处理完成的 IO
     //    检查是否有 IO 操作已经完成

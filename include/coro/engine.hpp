@@ -56,11 +56,22 @@ template<typename T>
 // multi producer and multi consumer queue
 using mpmc_queue = AtomicQueue<T>;
 
+#define wake_by_task(val) (((val) & engine::task_mask) > 0)
+#define wake_by_io(val)   (((val) & engine::io_mask) > 0)
+#define wake_by_cqe(val)  (((val) & engine::cqe_mask) > 0)
+
 class engine
 {
     friend class ::coro::context;
 
 public:
+    static constexpr uint64_t task_mask = (0xFFFFF00000000000);
+    static constexpr uint64_t io_mask   = (0x00000FFFFF000000);
+    static constexpr uint64_t cqe_mask  = (0x0000000000FFFFFF);
+
+    static constexpr uint64_t task_flag = (((uint64_t)1) << 44);
+    static constexpr uint64_t io_flag   = (((uint64_t)1) << 24);
+
     engine() noexcept { m_id = ginfo.engine_id.fetch_add(1, std::memory_order_relaxed); }
 
     ~engine() noexcept = default;
@@ -164,12 +175,14 @@ public:
      * @return uring_proxy&
      */
     inline auto get_uring() noexcept -> uring_proxy& { return m_upxy; }
-
     // TODO[lab2a]: Add more function if you need
 
+    auto wake_up(uint64_t val = engine::task_flag) noexcept -> void;
+    auto do_io_submit() noexcept -> void;
+
 private:
-    uint32_t    m_id;
-    uring_proxy m_upxy;
+    uint32_t         m_id;
+    uring_proxy      m_upxy;
     atomic<uint32_t> m_running_io = 0;
     // uint32_t    m_io_to_submit;
     atomic<uint32_t> m_io_to_submit = 0;

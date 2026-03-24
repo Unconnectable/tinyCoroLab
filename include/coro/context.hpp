@@ -136,14 +136,26 @@ public:
      */
     [[CORO_TEST_USED(lab2b)]] auto run(stop_token token) noexcept -> void;
 
+    auto process_work() noexcept -> void;
+    auto poll_work() noexcept -> void;
+
     // TODO[lab2b]: Add more function if you need
+    inline auto empty_all() noexcept -> bool
+    {
+        return m_num_wait_task.load(memory_order_acquire) == 0 && m_engine.empty_io();
+    }
+
+    using stop_cb = std::function<void()>;
+
+    auto set_stop_cb(stop_cb cb) noexcept -> void { m_stop_cb = cb; }
 
 private:
     CORO_ALIGN engine   m_engine;
     unique_ptr<jthread> m_job;
     ctx_id              m_id;
-
     // TODO[lab2b]: Add more member variables if you need
+    atomic<size_t> m_num_wait_task{0};
+    stop_cb        m_stop_cb; //定义 context 在发现自己没活干时应该执行的操作  具体用来执行stop_impl逻辑
 };
 
 inline context& local_context() noexcept
